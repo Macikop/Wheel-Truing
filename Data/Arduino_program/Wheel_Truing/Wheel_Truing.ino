@@ -1,73 +1,141 @@
-#define DETECTOR_0 8
-#define DETECTOR_1 9
+#define DETECTOR_0 2
+#define DETECTOR_1 3
 #define INDUCTIVE_SENSE A3
 #define LED 13
 
+#define BUFFER_SIZE 64
+
 bool measuring = false;
-String inputLine = "";
+char cmdBuf[BUFFER_SIZE];
+uint8_t cmdPos = 0;
 
-void setup()
+bool detector0 = false;
+bool detector1 = false;
+uint8_t spoke_count_total = 0;
+uint8_t spoke_counter = 0;
+int8_t last_spoke = -1;
+
+void handleCommand(char *cmd)
 {
-  Serial.begin(115200);
-  pinMode(DETECTOR_0, INPUT);
-  pinMode(DETECTOR_1, INPUT);
-  pinMode(LED, OUTPUT);
-  digitalWrite(LED, LOW);
-}
+  // convert to upper case
+  for (char *p = cmd; *p; p++) *p = toupper(*p);
 
-void handleCommand(String cmd)
-{
-  cmd.trim();
-  cmd.toUpperCase();
-
-  if (cmd == "*IDN?")
+  if (!strcmp(cmd, "*IDN?"))
   {
     Serial.println("Piofciex,Wheel-Truing-Stand,0001,1.0");
   }
-  else if (cmd == "MEAS:START")
+  else if (!strcmp(cmd, "MEAS:START"))
   {
-    digitalWrite(LED, HIGH);
     measuring = true;
   }
-  else if (cmd == "MEAS:STOP")
+  else if (!strcmp(cmd, "MEAS:DATA?"))
   {
-    digitalWrite(LED, LOW);
+    Serial.print(analogRead(INDUCTIVE_SENSE));
+    Serial.print(';');
+    Serial.print(spoke_counter);
+    Serial.print('\n');
+  }
+  else if (!strcmp(cmd, "MEAS:STOP"))
+  {
     measuring = false;
+  }
+  else if (!strcmp(cmd, "SPOKES:ZERO"))
+  {
+    noInterrupts();
+    spoke_counter = 0;
+    detector0 = false;
+    detector1 = false;
+    interrupts();
+    Serial.println("OK");
+  }
+  else if (!strcmp(cmd, "SPOKES?"))
+  {
+    Serial.println(spoke_count_total);
+  }
+  else if (!strncmp(cmd, "SPOKES ", 7))
+  {
+    int value = atoi(cmd + 7);
+    if (value > 0 && value < 128)   // simple sanity check
+    {
+      spoke_count_total = value;
+      Serial.println("OK");
+    }
+    else
+    {
+      Serial.println("Error, numer too large");
+    }
   }
   else
   {
-    // Optional: SCPI-style error
-    Serial.println("ERROR:UNKNOWN COMMAND");
+    Serial.print("Error (");
+    Serial.print(cmd);
+    Serial.println(");");
   }
+}
+
+
+void setup()
+{
+  Serial.begin(9600);
+  while (!Serial) {
+    ; // wait for serial port to connect. Needed for native USB
+  }
+  //Serial.println("OK");
+  pinMode(DETECTOR_0, INPUT);
+  pinMode(DETECTOR_1, INPUT);
+  pinMode(LED, OUTPUT);
+
+  attachInterrupt(digitalPinToInterrupt(DETECTOR_0), detectorIRQ0, FALLING);
+  attachInterrupt(digitalPinToInterrupt(DETECTOR_1), detectorIRQ1, FALLING);
+
+  digitalWrite(LED, LOW);
 }
 
 void loop()
 {
-  /* ---- SCPI command reception ---- */
-  while (Serial.available())
-  {
+  while (Serial.available()) {
     char c = Serial.read();
-
-    if (c == '\n')
-    {
-      handleCommand(inputLine);
-      inputLine = "";
+    if (c == '\n') {
+      cmdBuf[cmdPos] = 0;
+      handleCommand(cmdBuf);
+      cmdPos = 0;
     }
-    else if (c != '\r')
-    {
-      inputLine += c;
+    else if (c != '\r' && cmdPos < sizeof(cmdBuf) - 1) {
+      cmdBuf[cmdPos++] = c;
     }
   }
 
-  /* ---- Measurement output ---- */
-  if (measuring)
+  if ((measuring) && (last_spoke != spoke_counter))
   {
-    Serial.print(analogRead(INDUCTIVE_SENSE));
-    Serial.print(';');
-    Serial.print(digitalRead(DETECTOR_0));
-    Serial.print(';');
-    Serial.print(digitalRead(DETECTOR_1));
-    Serial.print('\n');
-    delay(1);
+      Serial.print(analogRead(INDUCTIVE_SENSE));
+      Serial.print(';');
+      Serial.print(spoke_counter);
+      Serial.print('\n');
+      last_spoke = spoke_counter;
+  }
+  //delay(1);
+}
+
+void detectorIRQ0()
+{
+  detector0 = !detector0;
+  if(detector0 && detector1)
+  {
+    spoke_counter--;
+    spoke_counter = spoke_counter % spoke_count_total;
+    detector0 = false;
+    detector1 = false;
+  }
+}
+
+void detectorIRQ1()
+{
+  detector1 = !detector1;
+  if(detector0 && detector1)
+  {
+    spoke_counter++;
+    spoke_counter = spoke_counter % spoke_count_total;
+    detector0 = false;
+    detector1 = false;
   }
 }
